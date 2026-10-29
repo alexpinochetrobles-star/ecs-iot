@@ -1,0 +1,158 @@
+{% extends "base.html" %}
+{% load static %}
+{% block content %}
+<div class="container-fluid py-3">
+
+  <!-- Encabezado con logo del proyecto -->
+  <div class="d-flex align-items-center mb-3">
+    <img src="{% static 'img/logo.png' %}" alt="Logo" height="60" class="me-3">
+    <div>
+      <h2 class="mb-0">Monitoreo Pozo Profundo</h2>
+      <small class="text-muted">Proyecto IoT – Django + Raspberry Pi + ESP32</small>
+    </div>
+  </div>
+
+  <!-- Tarjetas de variables -->
+  <div class="row g-3 mb-3">
+    <div class="col-md-3">
+      <div class="card border-primary shadow-sm">
+        <div class="card-body">
+          <h6 class="text-muted mb-1">Nivel Estático</h6>
+          <h3 id="cardNE" class="mb-0">-- m</h3>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-3">
+      <div class="card border-warning shadow-sm">
+        <div class="card-body">
+          <h6 class="text-muted mb-1">Nivel Dinámico</h6>
+          <h3 id="cardND" class="mb-0">-- m</h3>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-3">
+      <div class="card border-success shadow-sm">
+        <div class="card-body">
+          <h6 class="text-muted mb-1">Caudal</h6>
+          <h3 id="cardQ" class="mb-0">-- L/s</h3>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-3">
+      <div class="card border-danger shadow-sm">
+        <div class="card-body">
+          <h6 class="text-muted mb-1">Bomba</h6>
+          <h3 id="cardBomba" class="mb-0">OFF</h3>
+          <small id="horaUltima" class="text-muted">--</small>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Alarmas / bloqueos -->
+  <div class="row g-3 mb-3">
+    <div class="col-md-6">
+      <div class="card shadow-sm">
+        <div class="card-body">
+          <h6 class="mb-2">Estado del pozo</h6>
+          <span id="badgeNivelMin" class="badge bg-secondary me-2">Nivel mínimo</span>
+          <span id="badgeParo"     class="badge bg-secondary">Paro de emergencia</span>
+        </div>
+      </div>
+    </div>
+    {% if perms.dashboard.can_control_bomba %}
+    <div class="col-md-6">
+      <div class="card shadow-sm">
+        <div class="card-body">
+          <h6 class="mb-2">Control de bomba</h6>
+          <button id="btnOn"  class="btn btn-success me-2">Encender</button>
+          <button id="btnOff" class="btn btn-danger">Apagar</button>
+          <div id="msgControl" class="small mt-2 text-muted"></div>
+        </div>
+      </div>
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- Gráfico en tiempo real -->
+  <div class="card shadow-sm">
+    <div class="card-body" style="height:420px">
+      <canvas id="graficoPozo"></canvas>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+function getCookie(name) {
+  return document.cookie.split('; ').find(r => r.startsWith(name + '='))?.split('=')[1];
+}
+
+const ctx = document.getElementById('graficoPozo').getContext('2d');
+const grafico = new Chart(ctx, {
+  type: 'line',
+  data: {
+    labels: [],
+    datasets: [
+      { label: 'Nivel Estático (m)',  data: [], borderColor: '#0d6efd', tension: .3 },
+      { label: 'Nivel Dinámico (m)',  data: [], borderColor: '#ffc107', tension: .3 },
+      { label: 'Caudal (L/s)',        data: [], borderColor: '#198754', yAxisID: 'y2', tension: .3 },
+    ],
+  },
+  options: {
+    responsive: true, maintainAspectRatio: false,
+    scales: {
+      y:  { title: { display: true, text: 'Nivel (m)' }, reverse: false },
+      y2: { position: 'right', title: { display: true, text: 'Caudal (L/s)' } },
+    },
+  },
+});
+
+async function actualizarDashboard() {
+  const r1 = await fetch('/api/lecturas/');
+  const d1 = await r1.json();
+  grafico.data.labels = d1.labels;
+  grafico.data.datasets[0].data = d1.nivel_estatico;
+  grafico.data.datasets[1].data = d1.nivel_dinamico;
+  grafico.data.datasets[2].data = d1.caudal;
+  grafico.update('none');
+
+  document.getElementById('cardNE').textContent = (d1.ultima.nivel_estatico_m ?? '--') + ' m';
+  document.getElementById('cardND').textContent = (d1.ultima.nivel_dinamico_m ?? '--') + ' m';
+  document.getElementById('cardQ').textContent  = (d1.ultima.caudal_lps ?? '--') + ' L/s';
+  document.getElementById('horaUltima').textContent = d1.ultima.fecha_hora || '--';
+
+  const r2 = await fetch('/api/estado-gpio/');
+  const d2 = await r2.json();
+
+  const bomba = document.getElementById('cardBomba');
+  bomba.textContent = d2.bomba_encendida ? 'ON' : 'OFF';
+  bomba.className = 'mb-0 ' + (d2.bomba_encendida ? 'text-success' : 'text-danger');
+
+  const bN = document.getElementById('badgeNivelMin');
+  bN.textContent = d2.nivel_minimo_ok ? 'Nivel OK' : 'Nivel BAJO';
+  bN.className = 'badge me-2 ' + (d2.nivel_minimo_ok ? 'bg-success' : 'bg-danger');
+
+  const bP = document.getElementById('badgeParo');
+  bP.textContent = d2.paro_emergencia_activo ? 'PARO ACTIVO' : 'Paro OK';
+  bP.className = 'badge ' + (d2.paro_emergencia_activo ? 'bg-danger' : 'bg-success');
+}
+
+async function controlarBomba(accion) {
+  const r = await fetch('/api/bomba/', {
+    method: 'POST',
+    headers: { 'X-CSRFToken': getCookie('csrftoken'),
+               'Content-Type': 'application/x-www-form-urlencoded' },
+    body: 'accion=' + accion,
+  });
+  const d = await r.json();
+  document.getElementById('msgControl').textContent = d.mensaje;
+}
+
+document.getElementById('btnOn')?.addEventListener('click',  () => controlarBomba('on'));
+document.getElementById('btnOff')?.addEventListener('click', () => controlarBomba('off'));
+
+setInterval(actualizarDashboard, 3000);
+actualizarDashboard();
+</script>
+{% endblock %}
